@@ -22,7 +22,7 @@
 const { useState, useEffect, useRef, useCallback } = React;
 
 /* ── API ── */
-const API = "https://script.google.com/macros/s/AKfycby6PZanbNXh9LSu0PWttLkMfvZBzHX5UWy2-p3Ctoj8DJ7UW0oStRSifuL8MH-r9lBR2g/exec";
+const API = "https://script.google.com/macros/s/AKfycby3ECBKoOgBvKTjjqKZXnedKT-WsWtKiT-Fg7Uuthu4s0sRaa0cF5_jMo1apo7uz9YzeA/exec";
 async function apiGet(params) {
   const url = API + "?" + new URLSearchParams(params).toString();
   const res = await fetch(url, { redirect: "follow" });
