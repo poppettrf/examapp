@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ระบบสอบออนไลน์</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📝</text></svg>"/>
+  <!-- React + Babel + XLSX from CDN — ไม่ต้อง build เลย -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #F7F6F3; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ── API ── */
+const API = "https://script.google.com/macros/s/AKfycbyTJ6Epxgj4oXymKfxpGc-YBWozQJlnIIsgnVTo7cX0PWKJK_7YdGmNIJDrlt1I4y0tfQ/exec";
+async function apiGet(params) {
+  const url = API + "?" + new URLSearchParams(params).toString();
+  const res = await fetch(url, { redirect: "follow" });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "API error");
+  return data;
+}
+async function apiPost(body) {
+  const encoded = encodeURIComponent(JSON.stringify(body));
+  const res = await fetch(API + "?payload=" + encoded, { redirect: "follow" });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "API error");
+  return data;
+}
+
+/* ── Helpers ── */
+const uid = () => Math.random().toString(36).slice(2, 9);
+const shuffle = a => { const b=[...a]; for(let i=b.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[b[i],b[j]]=[b[j],b[i]];} return b; };
+const fmtTime = s => `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
+
+/* ── Design tokens ── */
+const C = {
+  bg:"#F7F6F3", bgCard:"#FFFFFF", bgPanel:"#F0EEE9",
+  border:"#E2DED8", borderFocus:"#2563EB",
+  primary:"#2563EB", primaryLight:"#EFF6FF",
+  accent:"#059669", accentLight:"#ECFDF5",
+  warn:"#D97706", warnLight:"#FFFBEB",
+  danger:"#DC2626", dangerLight:"#FEF2F2",
+  purple:"#7C3AED", purpleLight:"#F5F3FF",
+  text:"#1C1917", textSub:"#78716C", textMute:"#A8A29E",
+};
+
+const GS = `
+@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+body{background:${C.bg};color:${C.text};font-family:'Sarabun',sans-serif;font-size:15px;line-height:1.6;}
+::-webkit-scrollbar{width:5px;} ::-webkit-scrollbar-thumb{background:${C.border};border-radius:99px;}
+input,select,textarea{font-family:'Sarabun',sans-serif;font-size:14px;color:${C.text};background:${C.bgCard};border:1.5px solid ${C.border};border-radius:8px;padding:9px 12px;outline:none;width:100%;transition:border-color .15s,box-shadow .15s;}
+input:focus,select:focus,textarea:focus{border-color:${C.borderFocus};box-shadow:0 0 0 3px rgba(37,99,235,.12);}
+select option{background:${C.bgCard};}
+.mono{font-family:'IBM Plex Mono',monospace;}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.fade-in{animation:fadeIn .22s ease both;}
+`;
+
+/* ── UI Atoms ── */
+const Btn = ({v="primary",sm,children,style:sx={},...p}) => {
+  const base={cursor:"pointer",border:"none",borderRadius:8,padding:sm?"6px 14px":"9px 20px",fontFamily:"'Sarabun',sans-serif",fontWeight:600,fontSize:sm?13:14,display:"inline-flex",alignItems:"center",gap:6,transition:"all .15s",whiteSpace:"nowrap",...sx};
+  const V={primary:{background:C.primary,color:"#fff"},success:{background:C.accent,color:"#fff"},warn:{background:C.warn,color:"#fff"},danger:{background:C.danger,color:"#fff"},ghost:{background:"transparent",color:C.primary,border:`1.5px solid ${C.primary}`},muted:{background:C.bgPanel,color:C.textSub,border:`1.5px solid ${C.border}`},purple:{background:C.purple,color:"#fff"}};
+  return <button {...p} style={{...base,...V[v],...(p.disabled?{opacity:.45,cursor:"not-allowed"}:{})}} onMouseEnter={e=>{if(!p.disabled)e.currentTarget.style.filter="brightness(1.08)";}} onMouseLeave={e=>e.currentTarget.style.filter=""}>{children}</button>;
+};
+const Badge = ({c="muted",children}) => {
+  const M={green:[C.accentLight,C.accent],blue:[C.primaryLight,C.primary],warn:[C.warnLight,C.warn],red:[C.dangerLight,C.danger],muted:[C.bgPanel,C.textSub],purple:[C.purpleLight,C.purple]};
+  const [bg,fg]=M[c]||M.muted;
+  return <span style={{display:"inline-block",padding:"2px 10px",borderRadius:99,fontSize:12,fontWeight:600,background:bg,color:fg}}>{children}</span>;
+};
+const Card = ({children,style:sx={},...p}) => <div {...p} style={{background:C.bgCard,border:`1.5px solid ${C.border}`,borderRadius:14,padding:20,...sx}}>{children}</div>;
+const Field = ({label,hint,children}) => (
+  <div style={{marginBottom:14}}>
+    <label style={{fontSize:12,fontWeight:600,color:C.textSub,display:"block",marginBottom:5,textTransform:"uppercase",letterSpacing:".04em"}}>{label}</label>
+    {children}
+    {hint&&<p style={{fontSize:11,color:C.textMute,marginTop:4}}>{hint}</p>}
+  </div>
+);
+const Modal = ({title,onClose,children,wide}) => (
+  <div onClick={e=>e.target===e.currentTarget&&onClose()} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16}}>
+    <div className="fade-in" style={{background:C.bgCard,border:`1.5px solid ${C.border}`,borderRadius:16,width:"100%",maxWidth:wide?700:480,maxHeight:"92vh",overflowY:"auto",padding:28,boxShadow:"0 20px 60px rgba(0,0,0,.15)"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:22}}>
+        <h3 style={{fontSize:17,fontWeight:700}}>{title}</h3>
+        <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",color:C.textMute,fontSize:22,padding:4}}>✕</button>
+      </div>
+      {children}
+    </div>
+  </div>
+);
+const Tabs = ({tabs,active,onChange}) => (
+  <div style={{display:"flex",borderBottom:`1.5px solid ${C.border}`,marginBottom:22}}>
+    {tabs.map(t=><button key={t.id} onClick={()=>onChange(t.id)} style={{background:"none",border:"none",borderBottom:`2.5px solid ${active===t.id?C.primary:"transparent"}`,cursor:"pointer",padding:"10px 20px",fontFamily:"'Sarabun',sans-serif",fontSize:14,fontWeight:600,color:active===t.id?C.primary:C.textSub,marginBottom:-1.5,transition:"all .15s"}}>{t.label}</button>)}
+  </div>
+);
+const Spinner = ({size=18}) => <div style={{display:"inline-block",width:size,height:size,border:`2.5px solid ${C.border}`,borderTopColor:C.primary,borderRadius:"50%",animation:"spin .7s linear infinite",flexShrink:0}}/>;
+const Empty = ({icon,text,sub}) => <div style={{textAlign:"center",padding:"3rem 1rem",color:C.textMute}}><div style={{fontSize:40,marginBottom:10}}>{icon}</div><div style={{fontSize:14,fontWeight:600,color:C.textSub}}>{text}</div>{sub&&<div style={{fontSize:12,marginTop:4}}>{sub}</div>}</div>;
+
+const QR = ({value,size=140}) => {
+  const h=[...value].reduce((a,c)=>((a<<5)-a+c.charCodeAt(0))|0,0);
+  const N=21; const cell=size/N;
+  return (
+    <div style={{background:"#fff",padding:8,borderRadius:12,display:"inline-block",lineHeight:0,border:`1.5px solid ${C.border}`}}>
+      <svg width={size} height={size}>
+        {Array.from({length:N*N},(_,i)=>{
+          const x=i%N,y=Math.floor(i/N);
+          const finder=(x<7&&y<7)||(x>N-8&&y<7)||(x<7&&y>N-8);
+          const fill=finder?1:((Math.abs(h)*(i*2654435761+1))&0xFFF)%3===0?1:0;
+          return fill?<rect key={i} x={x*cell} y={y*cell} width={cell-.4} height={cell-.4} fill="#1C1917"/>:null;
+        })}
+      </svg>
+    </div>
+  );
+};
+
+function useCountdown(totalSec,active,onEnd){
+  const [rem,setRem]=useState(totalSec);
+  const fired=useRef(false);
+  useEffect(()=>{setRem(totalSec);fired.current=false;},[totalSec]);
+  useEffect(()=>{
+    if(!active)return;
+    if(rem<=0){if(!fired.current){fired.current=true;onEnd();}return;}
+    const t=setInterval(()=>setRem(r=>{if(r<=1){clearInterval(t);if(!fired.current){fired.current=true;onEnd();}return 0;}return r-1;}),1000);
+    return()=>clearInterval(t);
+  },[active,rem===totalSec]);
+  return rem;
+}
+
+function useAntiCheat(active,cb){
+  const n=useRef(0);
+  useEffect(()=>{
+    if(!active)return;
+    const vis=()=>{if(document.hidden){n.current++;cb(`ออกจากหน้าสอบ ครั้งที่ ${n.current}`);}};
+    const key=e=>{
+      if((e.ctrlKey||e.metaKey)&&"cvausp".includes(e.key.toLowerCase()))e.preventDefault();
+      if(e.key==="PrintScreen"){e.preventDefault();cb("พยายามจับภาพหน้าจอ");}
+      if(e.metaKey&&e.shiftKey&&"345".includes(e.key))cb("จับภาพหน้าจอ (Mac)");
+      if(e.key==="F12")e.preventDefault();
+    };
+    document.addEventListener("visibilitychange",vis);
+    document.addEventListener("keydown",key);
+    document.addEventListener("contextmenu",e=>e.preventDefault());
+    document.addEventListener("copy",e=>e.preventDefault());
+    return()=>{document.removeEventListener("visibilitychange",vis);document.removeEventListener("keydown",key);};
+  },[active]);
+}
+
+/* ── Excel ── */
+function dlTemplate(){
+  const ws=XLSX.utils.aoa_to_sheet([["ประเภท(mc/written)","คำถาม","ตัวเลือก1","ตัวเลือก2","ตัวเลือก3","ตัวเลือก4","เฉลย(1-4)","คะแนน"],["mc","2+2=?","2","3","4","5","3","1"],["written","อธิบายประชาธิปไตย","","","","","","3"]]);
+  ws["!cols"]=[18,40,14,14,14,14,12,8].map(w=>({wch:w}));
+  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"template");
+  XLSX.writeFile(wb,"template_ข้อสอบ.xlsx");
+}
+async function parseExcelQs(file){
+  const buf=await file.arrayBuffer();
+  const wb=XLSX.read(buf);
+  const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1});
+  return rows.slice(1).filter(r=>r[1]).map(r=>({id:"q-"+uid(),type:String(r[0]||"mc").trim(),text:String(r[1]||""),image:null,choices:r[0]==="mc"?[r[2],r[3],r[4],r[5]].map(String):[],answer:r[0]==="mc"?(+r[6]||1)-1:undefined,points:+r[7]||1}));
+}
+async function parseStudents(file){
+  if(file.name.match(/\.xlsx?$/i)){
+    const buf=await file.arrayBuffer();
+    const wb=XLSX.read(buf);
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1});
+    return rows.slice(1).filter(r=>r[0]||r[1]).map((r,i)=>({no:+r[0]||i+1,name:String(r[1]||"").trim()}));
+  }
+  const text=await file.text();
+  return text.trim().split("\n").map((l,i)=>{const p=l.split(",").map(x=>x.trim().replace(/"/g,""));return{no:+p[0]||i+1,name:p[1]||p[0]||`นักเรียน${i+1}`};});
+}
+function exportExcel(session,room,bank,results){
+  const total=bank?.questions?.reduce((a,q)=>a+q.points,0)||0;
+  const ws=XLSX.utils.aoa_to_sheet([["เลขที่","ชื่อ-นามสกุล","คะแนน","คะแนนเต็ม","ร้อยละ","เวลาส่ง","การละเมิด"],...(room?.students||[]).map(s=>{const r=results.find(r=>+r.studentNo===+s.no);const sc=r?.finalScore??r?.autoScore??"-";return[s.no,s.name,sc,total,r?Math.round(((r.finalScore??r.autoScore??0)/total)*100)+"%":"-",r?.submittedAt||"ไม่ส่ง",r?.violations?.length||0];})]);
+  ws["!cols"]=[6,30,8,8,8,20,10].map(w=>({wch:w}));
+  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"ผลสอบ");
+  XLSX.writeFile(wb,`ผลสอบ_${session.title}.xlsx`);
+}
+
+/* ── Question Editor ── */
+function QEditor({q,onSave,onCancel}){
+  const [f,setF]=useState({...q,choices:q.choices?.length?[...q.choices]:["","","",""]});
+  const valid=f.text.trim()&&(f.type==="written"||f.choices.every(c=>c.trim()));
+  return(
+    <div style={{background:C.bgPanel,border:`1.5px solid ${C.border}`,borderRadius:12,padding:16}}>
+      <div style={{display:"flex",gap:6,marginBottom:12}}>
+        {["mc","written"].map(t=><Btn key={t} v={f.type===t?"primary":"muted"} sm onClick={()=>setF(p=>({...p,type:t}))}>{t==="mc"?"ปรนัย":"อัตนัย"}</Btn>)}
+      </div>
+      <Field label="คำถาม"><textarea style={{minHeight:60,resize:"vertical"}} placeholder="พิมพ์คำถาม..." value={f.text} onChange={e=>setF(p=>({...p,text:e.target.value}))}/></Field>
+      {f.type==="mc"&&(
+        <Field label="ตัวเลือก — ⭕ = เฉลย">
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            {f.choices.map((c,i)=>(
+              <div key={i} style={{display:"flex",gap:6,alignItems:"center"}}>
+                <input type="radio" checked={f.answer===i} onChange={()=>setF(p=>({...p,answer:i}))} style={{width:"auto",accentColor:C.accent,flexShrink:0}}/>
+                <input placeholder={`ตัวเลือก ${i+1}`} value={c} style={{flex:1}} onChange={e=>{const ch=[...f.choices];ch[i]=e.target.value;setF(p=>({...p,choices:ch}));}}/>
+              </div>
+            ))}
+          </div>
+        </Field>
+      )}
+      <div style={{display:"flex",gap:10,alignItems:"center"}}>
+        <span style={{fontSize:13,color:C.textSub}}>คะแนน:</span>
+        <input type="number" min={1} style={{width:60}} value={f.points} onChange={e=>setF(p=>({...p,points:+e.target.value||1}))}/>
+        <div style={{flex:1}}/>
+        <Btn v="muted" sm onClick={onCancel}>ยกเลิก</Btn>
+        <Btn v="success" sm onClick={()=>valid&&onSave(f)} disabled={!valid}>✓ บันทึก</Btn>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════
+   LOGIN
+════════════════════════════════ */
+function LoginPage({onLogin}){
+  const [tab,setTab]=useState("teacher");
+  const [f,setF]=useState({user:"",pass:"",pin:"",sKey:""});
+  const [err,setErr]=useState("");
+  const [loading,setLoading]=useState(false);
+  const [sesData,setSesData]=useState(null);
+  const [pinLoading,setPinLoading]=useState(false);
+
+  const lookupPin=async pin=>{
+    if(pin.length<6){setSesData(null);return;}
+    setPinLoading(true);
+    try{const d=await apiGet({action:"getSession",code:pin});setSesData(d);}
+    catch{setSesData(null);}
+    finally{setPinLoading(false);}
+  };
+
+  const loginTeacher=()=>{
+    if(f.user==="teacher"&&f.pass==="1234")onLogin({role:"teacher",name:"ครูผู้สอน"});
+    else setErr("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง");
+  };
+
+  const loginStudent=async()=>{
+    if(!sesData||!f.sKey){setErr("กรุณาเลือกชื่อ");return;}
+    setLoading(true);
+    try{const[no,name]=f.sKey.split("|");onLogin({role:"student",studentNo:+no,studentName:name,sessionId:sesData.session.id,session:sesData.session});}
+    catch(e){setErr(e.message);}finally{setLoading(false);}
+  };
+
+  return(
+    <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <style>{GS}</style>
+      <div style={{width:"100%",maxWidth:400}}>
+        <div style={{textAlign:"center",marginBottom:32}}>
+          <div style={{width:64,height:64,background:C.primary,borderRadius:18,display:"flex",alignItems:"center",justifyContent:"center",fontSize:30,margin:"0 auto 14px",boxShadow:`0 8px 24px ${C.primary}50`}}>📝</div>
+          <h1 style={{fontSize:24,fontWeight:700}}>ระบบสอบออนไลน์</h1>
+          <p style={{color:C.textSub,fontSize:13,marginTop:5}}>ลดกระดาษ · ป้องกันการลอก · ตรวจทันที</p>
+        </div>
+        <Card style={{boxShadow:"0 4px 24px rgba(0,0,0,.07)"}}>
+          <div style={{display:"flex",gap:4,marginBottom:20,background:C.bgPanel,padding:4,borderRadius:10}}>
+            {[{id:"teacher",label:"👩‍🏫 ครู"},{id:"student",label:"🧑‍🎓 นักเรียน"}].map(t=>(
+              <button key={t.id} onClick={()=>{setTab(t.id);setErr("");}} style={{flex:1,padding:"8px 0",borderRadius:7,border:"none",cursor:"pointer",fontFamily:"'Sarabun',sans-serif",fontWeight:600,fontSize:14,background:tab===t.id?C.bgCard:"transparent",color:tab===t.id?C.primary:C.textSub,boxShadow:tab===t.id?"0 1px 4px rgba(0,0,0,.1)":"none",transition:"all .15s"}}>{t.label}</button>
+            ))}
+          </div>
+          {tab==="teacher"?(
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              <Field label="ชื่อผู้ใช้"><input placeholder="teacher" value={f.user} onChange={e=>setF({...f,user:e.target.value})}/></Field>
+              <Field label="รหัสผ่าน"><input type="password" placeholder="••••" value={f.pass} onChange={e=>setF({...f,pass:e.target.value})} onKeyDown={e=>e.key==="Enter"&&loginTeacher()}/></Field>
+              {err&&<p style={{color:C.danger,fontSize:12}}>{err}</p>}
+              <Btn v="primary" style={{width:"100%",justifyContent:"center",padding:11}} onClick={loginTeacher}>เข้าสู่ระบบ</Btn>
+              <p style={{textAlign:"center",fontSize:11,color:C.textMute}}>ทดสอบ: teacher / 1234</p>
+            </div>
+          ):(
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              <Field label="รหัสการสอบ" hint="ขอจากครู หรือสแกน QR Code">
+                <div style={{position:"relative"}}>
+                  <input className="mono" placeholder="------" maxLength={6} style={{letterSpacing:5,fontSize:22,textAlign:"center",textTransform:"uppercase",paddingRight:40}} value={f.pin} onChange={e=>{const v=e.target.value.toUpperCase();setF({...f,pin:v,sKey:""});lookupPin(v);}}/>
+                  {pinLoading&&<div style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)"}}><Spinner size={16}/></div>}
+                </div>
+              </Field>
+              {sesData&&(
+                <Field label="เลือกชื่อของคุณ">
+                  <select value={f.sKey} onChange={e=>setF({...f,sKey:e.target.value})}>
+                    <option value="">-- เลือกชื่อ --</option>
+                    {(sesData.students||[]).map(s=><option key={s.no} value={`${s.no}|${s.name}`}>เลขที่ {s.no} – {s.name}</option>)}
+                  </select>
+                </Field>
+              )}
+              {f.pin.length===6&&!sesData&&!pinLoading&&<p style={{color:C.warn,fontSize:12}}>⚠ ไม่พบรหัสนี้ หรือการสอบปิดแล้ว</p>}
+              {err&&<p style={{color:C.danger,fontSize:12}}>{err}</p>}
+              <Btn v="primary" style={{width:"100%",justifyContent:"center",padding:11}} onClick={loginStudent} disabled={!f.sKey||loading}>
+                {loading?<Spinner/>:"เข้าห้องสอบ →"}
+              </Btn>
+            </div>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════
+   TEACHER APP
+════════════════════════════════ */
+function TeacherApp({user,onLogout}){
+  const [tab,setTab]=useState("rooms");
+  const [tick,setTick]=useState(0);
+  const refresh=useCallback(()=>setTick(t=>t+1),[]);
+  const TABS=[{id:"rooms",label:"🏫 ห้องเรียน"},{id:"banks",label:"📚 คลังข้อสอบ"},{id:"sessions",label:"🎯 จัดสอบ"},{id:"results",label:"📊 ผลสอบ"}];
+  return(
+    <div style={{minHeight:"100vh",background:C.bg}}>
+      <style>{GS}</style>
+      <div style={{background:C.bgCard,borderBottom:`1.5px solid ${C.border}`,padding:"12px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:50}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{width:34,height:34,background:C.primary,borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>📝</div>
+          <div><div style={{fontWeight:700,fontSize:14}}>ระบบสอบออนไลน์</div><div style={{fontSize:11,color:C.textSub}}>{user.name}</div></div>
+        </div>
+        <Btn v="ghost" sm onClick={onLogout}>ออกจากระบบ</Btn>
+      </div>
+      <div style={{maxWidth:900,margin:"0 auto",padding:"24px 16px"}}>
+        <Tabs tabs={TABS} active={tab} onChange={setTab}/>
+        {tab==="rooms"&&<RoomsTab key={`r${tick}`} refresh={refresh}/>}
+        {tab==="banks"&&<BanksTab key={`b${tick}`} refresh={refresh}/>}
+        {tab==="sessions"&&<SessionsTab key={`s${tick}`} refresh={refresh}/>}
+        {tab==="results"&&<ResultsTab key={`res${tick}`} refresh={refresh}/>}
+      </div>
+    </div>
+  );
+}
+
+/* ── Rooms ── */
+function RoomsTab({refresh}){
+  const [rooms,setRooms]=useState([]);const [loading,setLoading]=useState(true);
+  const [modal,setModal]=useState(null);const [detail,setDetail]=useState(null);
+  const [form,setForm]=useState({name:"",description:""});const [saving,setSaving]=useState(false);
+  const load=()=>{setLoading(true);apiGet({action:"getRooms"}).then(d=>setRooms(d.rooms||[])).catch(()=>{}).finally(()=>setLoading(false));};
+  useEffect(load,[]);
+  const create=async()=>{
+    if(!form.name.trim())return;setSaving(true);
+    try{await apiPost({action:"createRoom",name:form.name,description:form.description,students:[]});setModal(null);setForm({name:"",description:""});load();refresh();}
+    catch(e){alert(e.message);}finally{setSaving(false);}
+  };
+  const uploadStudents=async(e,room)=>{
+    const f=e.target.files?.[0];if(!f)return;
+    const students=await parseStudents(f);
+    try{await apiPost({action:"updateRoom",id:room.id,name:room.name,description:room.description,students});load();refresh();}
+    catch(e){alert(e.message);}
+  };
+  if(loading)return <div style={{textAlign:"center",padding:40}}><Spinner/></div>;
+  return(
+    <div className="fade-in">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <h2 style={{fontSize:16,fontWeight:700}}>ห้องเรียน ({rooms.length})</h2>
+        <Btn v="primary" onClick={()=>setModal("create")}>+ สร้างห้องเรียน</Btn>
+      </div>
+      {rooms.length===0&&<Empty icon="🏫" text="ยังไม่มีห้องเรียน" sub="กดสร้างได้เลย"/>}
+      <div style={{display:"grid",gap:10}}>
+        {rooms.map(r=>(
+          <Card key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}}>
+            <div>
+              <div style={{fontWeight:700,fontSize:15}}>{r.name}</div>
+              {r.description&&<div style={{color:C.textSub,fontSize:13,marginTop:2}}>{r.description}</div>}
+              <div style={{marginTop:6}}><Badge c="blue">👤 {r.students?.length||0} คน</Badge></div>
+            </div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              <Btn v="muted" sm onClick={()=>setDetail(r)}>ดูรายชื่อ</Btn>
+              <label style={{display:"inline-flex",alignItems:"center",gap:5,cursor:"pointer",background:C.primaryLight,border:`1.5px solid ${C.primary}`,borderRadius:8,padding:"6px 12px",fontSize:13,fontWeight:600,color:C.primary}}>
+                📤 อัพโหลดรายชื่อ
+                <input type="file" accept=".csv,.xlsx,.xls" style={{display:"none"}} onChange={e=>uploadStudents(e,r)}/>
+              </label>
+            </div>
+          </Card>
+        ))}
+      </div>
+      {modal==="create"&&(
+        <Modal title="สร้างห้องเรียนใหม่" onClose={()=>setModal(null)}>
+          <Field label="ชื่อห้อง"><input placeholder="เช่น ม.3/1" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></Field>
+          <Field label="หมายเหตุ"><input placeholder="เช่น คณิตศาสตร์ ม.3" value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></Field>
+          <p style={{fontSize:11,color:C.textMute,marginBottom:14}}>💡 อัพโหลดรายชื่อได้ภายหลัง รองรับ .csv และ .xlsx</p>
+          <div style={{display:"flex",gap:8}}>
+            <Btn v="muted" style={{flex:1,justifyContent:"center"}} onClick={()=>setModal(null)}>ยกเลิก</Btn>
+            <Btn v="primary" style={{flex:1,justifyContent:"center"}} onClick={create} disabled={saving}>{saving?<Spinner/>:"สร้างห้อง"}</Btn>
+          </div>
+        </Modal>
+      )}
+      {detail&&(
+        <Modal title={`รายชื่อ – ${detail.name}`} onClose={()=>setDetail(null)}>
+          {!detail.students?.length?<Empty icon="👤" text="ยังไม่มีรายชื่อ"/>:(
+            <div style={{maxHeight:360,overflowY:"auto"}}>
+              {detail.students.map(s=>(
+                <div key={s.no} style={{display:"flex",gap:12,padding:"8px 4px",borderBottom:`1px solid ${C.border}`,fontSize:14}}>
+                  <span className="mono" style={{color:C.textMute,minWidth:28}}>{String(s.no).padStart(2,"0")}</span>
+                  <span>{s.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ── Banks ── */
+function BanksTab({refresh}){
+  const [banks,setBanks]=useState([]);const [loading,setLoading]=useState(true);
+  const [modal,setModal]=useState(null);const [editTarget,setEditTarget]=useState(null);
+  const [form,setForm]=useState({title:"",subject:""});
+  const [questions,setQuestions]=useState([]);const [addingQ,setAddingQ]=useState(false);const [editingQIdx,setEditingQIdx]=useState(null);
+  const [importFile,setImportFile]=useState(null);const [saving,setSaving]=useState(false);
+  const load=()=>{setLoading(true);apiGet({action:"getBanks"}).then(d=>setBanks(d.banks||[])).catch(()=>{}).finally(()=>setLoading(false));};
+  useEffect(load,[]);
+  const openCreate=()=>{setForm({title:"",subject:""});setQuestions([]);setEditTarget(null);setAddingQ(false);setEditingQIdx(null);setModal("bank");};
+  const openEdit=b=>{setForm({title:b.title,subject:b.subject});setQuestions(b.questions.map(q=>({...q,choices:q.choices?[...q.choices]:[]})));setEditTarget(b);setAddingQ(false);setEditingQIdx(null);setModal("bank");};
+  const saveQ=(q,idx)=>{if(idx===null)setQuestions(qs=>[...qs,q]);else setQuestions(qs=>qs.map((qq,i)=>i===idx?q:qq));setAddingQ(false);setEditingQIdx(null);};
+  const save=async()=>{
+    if(!form.title||questions.length===0)return;setSaving(true);
+    try{if(editTarget)await apiPost({action:"updateBank",id:editTarget.id,...form,questions});else await apiPost({action:"createBank",...form,questions});setModal(null);load();refresh();}
+    catch(e){alert(e.message);}finally{setSaving(false);}
+  };
+  if(loading)return <div style={{textAlign:"center",padding:40}}><Spinner/></div>;
+  return(
+    <div className="fade-in">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <h2 style={{fontSize:16,fontWeight:700}}>คลังข้อสอบ ({banks.length})</h2>
+        <Btn v="primary" onClick={openCreate}>+ สร้างคลัง</Btn>
+      </div>
+      {banks.length===0&&<Empty icon="📚" text="ยังไม่มีคลังข้อสอบ"/>}
+      <div style={{display:"grid",gap:10}}>
+        {banks.map(b=>(
+          <Card key={b.id}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:15,marginBottom:6}}>{b.title}</div>
+                <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
+                  {b.subject&&<span style={{fontSize:12,padding:"2px 8px",borderRadius:6,background:C.bgPanel,color:C.textSub}}>{b.subject}</span>}
+                  <Badge c="blue">{b.questions.length} ข้อ</Badge>
+                  <Badge c="green">{b.questions.reduce((a,q)=>a+q.points,0)} คะแนน</Badge>
+                  {b.questions.some(q=>q.type==="written")&&<Badge c="warn">มีข้อเขียน</Badge>}
+                </div>
+              </div>
+              <div style={{display:"flex",gap:6}}>
+                <Btn v="ghost" sm onClick={()=>openEdit(b)}>✏ แก้ไข</Btn>
+                <Btn v="danger" sm onClick={async()=>{if(confirm("ลบคลังนี้?")){try{await apiPost({action:"deleteBank",id:b.id});load();refresh();}catch(e){alert(e.message);}}}}>ลบ</Btn>
+              </div>
+            </div>
+          </Card>
+        ))}
+      </div>
+      {modal==="bank"&&(
+        <Modal title={editTarget?"แก้ไขคลัง":"สร้างคลังข้อสอบ"} onClose={()=>setModal(null)} wide>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:4}}>
+            <Field label="ชื่อคลัง"><input placeholder="เช่น สอบเก็บคะแนน บท 10" value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></Field>
+            <Field label="วิชา"><input placeholder="เช่น คณิตศาสตร์" value={form.subject} onChange={e=>setForm({...form,subject:e.target.value})}/></Field>
+          </div>
+          <div style={{background:C.bgPanel,borderRadius:10,padding:12,marginBottom:14}}>
+            <div style={{fontWeight:600,fontSize:12,color:C.textSub,marginBottom:8}}>📤 นำเข้าจาก Excel</div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+              <Btn v="muted" sm onClick={dlTemplate}>⬇ Template</Btn>
+              <label style={{display:"inline-flex",alignItems:"center",gap:5,cursor:"pointer",background:C.bgCard,border:`1px solid ${C.border}`,borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:600,color:C.primary}}>
+                📎 {importFile?importFile.name:"เลือกไฟล์"}
+                <input type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={e=>setImportFile(e.target.files?.[0]||null)}/>
+              </label>
+              {importFile&&<Btn v="primary" sm onClick={async()=>{const qs=await parseExcelQs(importFile);setQuestions(p=>[...p,...qs]);setImportFile(null);}}>นำเข้า</Btn>}
+            </div>
+          </div>
+          <div style={{marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <span style={{fontSize:12,fontWeight:600,color:C.textSub}}>ข้อสอบ ({questions.length} ข้อ)</span>
+              {!addingQ&&editingQIdx===null&&<Btn v="ghost" sm onClick={()=>setAddingQ(true)}>+ เพิ่มข้อ</Btn>}
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {questions.map((q,i)=>editingQIdx===i
+                ?<QEditor key={q.id} q={q} onSave={nq=>saveQ(nq,i)} onCancel={()=>setEditingQIdx(null)}/>
+                :(
+                  <div key={q.id} style={{background:C.bgCard,border:`1.5px solid ${C.border}`,borderRadius:10,padding:"10px 14px",display:"flex",gap:10,alignItems:"flex-start"}}>
+                    <span className="mono" style={{color:C.textMute,minWidth:22,fontSize:12}}>{i+1}.</span>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:"flex",gap:6,marginBottom:4}}><Badge c={q.type==="mc"?"blue":"warn"}>{q.type==="mc"?"ปรนัย":"อัตนัย"}</Badge><Badge c="muted">{q.points}คะแนน</Badge></div>
+                      <div style={{fontSize:13,lineHeight:1.5}}>{q.text}</div>
+                      {q.type==="mc"&&<div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:5}}>{q.choices.map((c,ci)=><span key={ci} style={{fontSize:11,padding:"2px 7px",borderRadius:6,background:ci===q.answer?C.accentLight:C.bgPanel,color:ci===q.answer?C.accent:C.textSub}}>{["A","B","C","D"][ci]}. {c}{ci===q.answer?" ✓":""}</span>)}</div>}
+                    </div>
+                    <div style={{display:"flex",gap:5}}>
+                      <Btn v="muted" sm onClick={()=>{setEditingQIdx(i);setAddingQ(false);}}>✏</Btn>
+                      <Btn v="danger" sm onClick={()=>setQuestions(qs=>qs.filter((_,j)=>j!==i))}>✕</Btn>
+                    </div>
+                  </div>
+                )
+              )}
+              {addingQ&&<QEditor q={{id:"q-"+uid(),type:"mc",text:"",choices:["","","",""],answer:0,points:1,image:null}} onSave={nq=>saveQ(nq,null)} onCancel={()=>setAddingQ(false)}/>}
+            </div>
+          </div>
+          <div style={{display:"flex",gap:8,borderTop:`1px solid ${C.border}`,paddingTop:14}}>
+            <Btn v="muted" style={{flex:1,justifyContent:"center"}} onClick={()=>setModal(null)}>ยกเลิก</Btn>
+            <Btn v="primary" style={{flex:1,justifyContent:"center"}} onClick={save} disabled={saving||!form.title||!questions.length}>{saving?<Spinner/>:`บันทึก (${questions.length} ข้อ)`}</Btn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ── Sessions ── */
+function SessionsTab({refresh}){
+  const [sessions,setSessions]=useState([]);const [rooms,setRooms]=useState([]);const [banks,setBanks]=useState([]);
+  const [loading,setLoading]=useState(true);const [modal,setModal]=useState(null);const [monitor,setMonitor]=useState(null);
+  const [form,setForm]=useState({bankId:"",roomId:"",timeLimit:20,title:""});const [saving,setSaving]=useState(false);
+  const load=async()=>{setLoading(true);try{const[s,r,b]=await Promise.all([apiGet({action:"getSessions"}),apiGet({action:"getRooms"}),apiGet({action:"getBanks"})]);setSessions(s.sessions||[]);setRooms(r.rooms||[]);setBanks(b.banks||[]);}catch{}finally{setLoading(false);}};
+  useEffect(load,[]);
+  useEffect(()=>{if(!monitor)return;const t=setInterval(()=>apiGet({action:"getSessions"}).then(d=>setSessions(d.sessions||[])),3000);return()=>clearInterval(t);},[monitor]);
+  const updateStatus=async(id,status,extra={})=>{try{await apiPost({action:"updateSession",id,status,...extra});load();}catch(e){alert(e.message);}};
+  const createSes=async()=>{
+    if(!form.bankId||!form.roomId)return;setSaving(true);
+    try{const bank=banks.find(b=>b.id===form.bankId);const d=await apiPost({action:"createSession",title:form.title||bank?.title||"",bankId:form.bankId,roomId:form.roomId,timeLimit:+form.timeLimit});await load();setModal(null);setMonitor(d.id);refresh();}
+    catch(e){alert(e.message);}finally{setSaving(false);}
+  };
+  const active=sessions.filter(s=>s.status!=="closed");
+  const closed=sessions.filter(s=>s.status==="closed");
+  const monSes=monitor?sessions.find(s=>s.id===monitor):null;
+  if(loading)return <div style={{textAlign:"center",padding:40}}><Spinner/></div>;
+  return(
+    <div className="fade-in">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <h2 style={{fontSize:16,fontWeight:700}}>จัดสอบ</h2>
+        <Btn v="primary" onClick={()=>setModal("create")}>+ จัดสอบใหม่</Btn>
+      </div>
+      {active.map(s=>{
+        const room=rooms.find(r=>r.id===s.roomId);
+        const sColor={waiting:C.warn,active:C.accent,paused:C.purple}[s.status]||C.textSub;
+        const sLabel={waiting:"⏳ รอเริ่ม",active:"🟢 กำลังสอบ",paused:"⏸ หยุดชั่วคราว"}[s.status]||s.status;
+        return(
+          <Card key={s.id} style={{marginBottom:12,borderColor:s.status==="active"?C.accent:s.status==="paused"?C.purple:C.border}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
+              <div style={{flex:1}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}><span style={{fontWeight:700,fontSize:15}}>{s.title}</span><span style={{fontSize:12,fontWeight:700,color:sColor}}>{sLabel}</span></div>
+                <div style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:12}}>
+                  <span style={{fontSize:12,background:C.bgPanel,padding:"2px 8px",borderRadius:6,color:C.textSub}}>🏫 {room?.name}</span>
+                  <span style={{fontSize:12,background:C.bgPanel,padding:"2px 8px",borderRadius:6,color:C.textSub}}>⏱ {s.timeLimit} นาที</span>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:16}}>
+                  <div><div className="mono" style={{fontSize:30,fontWeight:700,color:C.primary,letterSpacing:6}}>{s.code}</div><div style={{fontSize:11,color:C.textMute}}>รหัสการสอบ</div></div>
+                  <QR value={s.code} size={80}/>
+                </div>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:6,minWidth:130}}>
+                <Btn v="primary" sm onClick={()=>setMonitor(s.id)}>📡 Monitor</Btn>
+                {s.status==="waiting"&&<Btn v="success" sm onClick={()=>updateStatus(s.id,"active",{startedAt:true})}>▶ เริ่มสอบ</Btn>}
+                {s.status==="active"&&<Btn v="warn" sm onClick={()=>updateStatus(s.id,"paused",{pausedAt:true})}>⏸ หยุด</Btn>}
+                {s.status==="paused"&&<Btn v="success" sm onClick={()=>updateStatus(s.id,"active")}>▶ สอบต่อ</Btn>}
+                {s.status!=="waiting"&&<Btn v="danger" sm onClick={()=>{if(confirm("จบการสอบ?"))updateStatus(s.id,"closed",{endedAt:true});}}>⏹ จบสอบ</Btn>}
+              </div>
+            </div>
+          </Card>
+        );
+      })}
+      {closed.length>0&&<>
+        <div style={{fontSize:11,fontWeight:700,color:C.textMute,textTransform:"uppercase",margin:"16px 0 8px"}}>เสร็จสิ้น</div>
+        {closed.map(s=>{const room=rooms.find(r=>r.id===s.roomId);return(<Card key={s.id} style={{marginBottom:8,opacity:.7,display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontWeight:600}}>{s.title}</div><div style={{fontSize:12,color:C.textSub}}>{room?.name} · {s.endedAt}</div></div><Btn v="ghost" sm onClick={()=>setMonitor(s.id)}>ดูผล</Btn></Card>);})}
+      </>}
+      {sessions.length===0&&<Empty icon="🎯" text="ยังไม่มีการสอบ"/>}
+      {monSes&&<Modal title={`📡 Monitor – ${monSes.title}`} onClose={()=>setMonitor(null)} wide><MonitorPanel session={monSes} rooms={rooms} banks={banks} onUpdate={updateStatus}/></Modal>}
+      {modal==="create"&&(
+        <Modal title="จัดสอบใหม่" onClose={()=>setModal(null)}>
+          <Field label="ชื่อการสอบ"><input placeholder="เช่น สอบกลางภาค 1/2568" value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></Field>
+          <Field label="คลังข้อสอบ"><select value={form.bankId} onChange={e=>setForm({...form,bankId:e.target.value})}><option value="">-- เลือก --</option>{banks.map(b=><option key={b.id} value={b.id}>{b.title}</option>)}</select></Field>
+          <Field label="ห้องสอบ"><select value={form.roomId} onChange={e=>setForm({...form,roomId:e.target.value})}><option value="">-- เลือก --</option>{rooms.map(r=><option key={r.id} value={r.id}>{r.name} ({r.students?.length||0} คน)</option>)}</select></Field>
+          <Field label="เวลาสอบ (นาที)"><input type="number" min={1} value={form.timeLimit} onChange={e=>setForm({...form,timeLimit:e.target.value})}/></Field>
+          <div style={{display:"flex",gap:8}}>
+            <Btn v="muted" style={{flex:1,justifyContent:"center"}} onClick={()=>setModal(null)}>ยกเลิก</Btn>
+            <Btn v="primary" style={{flex:1,justifyContent:"center"}} onClick={createSes} disabled={saving||!form.bankId||!form.roomId}>{saving?<Spinner/>:"สร้างการสอบ →"}</Btn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function MonitorPanel({session,rooms,onUpdate}){
+  const [results,setResults]=useState([]);
+  const room=rooms.find(r=>r.id===session.roomId);
+  const [rem,setRem]=useState(+session.remainingAtPause||session.timeLimit*60);
+  const isActive=session.status==="active";
+  useEffect(()=>{
+    apiGet({action:"getResults",sessionId:session.id}).then(d=>setResults(d.results||[]));
+    const t=setInterval(()=>apiGet({action:"getResults",sessionId:session.id}).then(d=>setResults(d.results||[])),3000);
+    return()=>clearInterval(t);
+  },[session.id]);
+  useEffect(()=>{if(!isActive)return;const t=setInterval(()=>setRem(r=>Math.max(0,r-1)),1000);return()=>clearInterval(t);},[isActive]);
+  const pct=Math.round((rem/(session.timeLimit*60))*100);
+  const tc=rem<60?C.danger:rem<300?C.warn:C.accent;
+  return(
+    <div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:14}}>
+        {[["สถานะ",{waiting:"⏳ รอ",active:"🟢 สอบ",paused:"⏸ หยุด",closed:"✅ จบ"}[session.status],C.textSub],["ส่งแล้ว",`${results.length} / ${room?.students?.length||0}`,C.primary],["เวลาเหลือ",isActive||session.status==="paused"?fmtTime(rem):"--:--",tc]].map(([l,v,col])=>(
+          <div key={l} style={{background:C.bgPanel,borderRadius:10,padding:12,textAlign:"center"}}>
+            <div style={{fontSize:10,color:C.textMute,textTransform:"uppercase",marginBottom:4}}>{l}</div>
+            <div className="mono" style={{fontSize:18,fontWeight:700,color:col}}>{v}</div>
+          </div>
+        ))}
+      </div>
+      {(isActive||session.status==="paused")&&<div style={{height:5,background:C.bgPanel,borderRadius:3,marginBottom:14,overflow:"hidden"}}><div style={{height:"100%",width:`${pct}%`,background:tc,transition:"width 1s linear"}}/></div>}
+      <div style={{maxHeight:260,overflowY:"auto",marginBottom:14}}>
+        {(room?.students||[]).map(s=>{const r=results.find(r=>+r.studentNo===+s.no);return(<div key={s.no} style={{display:"flex",gap:10,alignItems:"center",padding:"7px 10px",background:C.bgPanel,borderRadius:8,marginBottom:4,fontSize:13}}><span className="mono" style={{color:C.textMute,minWidth:22}}>{s.no}</span><span style={{flex:1}}>{s.name}</span>{r?<Badge c="green">✓ {r.autoScore??0}คะแนน</Badge>:<Badge c="muted">รอ</Badge>}{r?.violations?.length>0&&<Badge c="red">⚠{r.violations.length}</Badge>}</div>);})}
+      </div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+        {session.status==="waiting"&&<Btn v="success" style={{flex:1,justifyContent:"center"}} onClick={()=>onUpdate(session.id,"active",{startedAt:true})}>▶ เริ่มสอบ</Btn>}
+        {session.status==="active"&&<Btn v="warn" style={{flex:1,justifyContent:"center"}} onClick={()=>onUpdate(session.id,"paused",{pausedAt:true})}>⏸ หยุด</Btn>}
+        {session.status==="paused"&&<Btn v="success" style={{flex:1,justifyContent:"center"}} onClick={()=>onUpdate(session.id,"active")}>▶ สอบต่อ</Btn>}
+        {session.status!=="waiting"&&session.status!=="closed"&&<Btn v="danger" style={{flex:1,justifyContent:"center"}} onClick={()=>{if(confirm("จบการสอบ?"))onUpdate(session.id,"closed",{endedAt:true});}}>⏹ จบ</Btn>}
+      </div>
+    </div>
+  );
+}
+
+/* ── Results ── */
+function ResultsTab({refresh}){
+  const [sessions,setSessions]=useState([]);const [rooms,setRooms]=useState([]);const [banks,setBanks]=useState([]);
+  const [results,setResults]=useState({});const [loading,setLoading]=useState(true);
+  const [sel,setSel]=useState(null);const [gradingModal,setGradingModal]=useState(null);
+  useEffect(()=>{Promise.all([apiGet({action:"getSessions"}),apiGet({action:"getRooms"}),apiGet({action:"getBanks"})]).then(([s,r,b])=>{setSessions(s.sessions||[]);setRooms(r.rooms||[]);setBanks(b.banks||[]);}).catch(()=>{}).finally(()=>setLoading(false));},[]);
+  const loadResults=async id=>{if(results[id])return;const d=await apiGet({action:"getResults",sessionId:id});setResults(p=>({...p,[id]:d.results||[]}));};
+  const grade=async(resultId,sessionId,mg,fs,done)=>{
+    try{await apiPost({action:"gradeWritten",resultId,manualGrades:mg,finalScore:fs,gradingDone:done});const d=await apiGet({action:"getResults",sessionId});setResults(p=>({...p,[sessionId]:d.results||[]}));if(gradingModal)setGradingModal(m=>({...m,result:(d.results||[]).find(r=>r.id===resultId)||m.result}));}
+    catch(e){alert(e.message);}
+  };
+  const closed=sessions.filter(s=>s.status==="closed");
+  if(loading)return <div style={{textAlign:"center",padding:40}}><Spinner/></div>;
+  return(
+    <div className="fade-in">
+      <h2 style={{fontSize:16,fontWeight:700,marginBottom:16}}>ผลการสอบ</h2>
+      {closed.length===0&&<Empty icon="📊" text="ยังไม่มีการสอบที่เสร็จสิ้น"/>}
+      {closed.map(s=>{
+        const room=rooms.find(r=>r.id===s.roomId);const bank=banks.find(b=>b.id===s.bankId);const res=results[s.id]||[];
+        const total=bank?.questions?.reduce((a,q)=>a+q.points,0)||0;const hasWritten=bank?.questions?.some(q=>q.type==="written");
+        const ungraded=res.filter(r=>!r.gradingDone&&hasWritten).length;
+        return(
+          <Card key={s.id} style={{marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,marginBottom:sel===s.id?12:0}}>
+              <div>
+                <div style={{fontWeight:700,fontSize:15,marginBottom:5}}>{s.title}</div>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap",fontSize:12,color:C.textSub}}>
+                  <span>🏫 {room?.name}</span><span>📅 {s.endedAt}</span><span>👥 {res.length} คนส่ง</span>
+                  {hasWritten&&ungraded>0&&<Badge c="warn">รอตรวจ {ungraded} คน</Badge>}
+                  {hasWritten&&ungraded===0&&res.length>0&&<Badge c="green">ตรวจครบ</Badge>}
+                </div>
+              </div>
+              <div style={{display:"flex",gap:6}}>
+                <Btn v="ghost" sm onClick={async()=>{if(sel!==s.id)await loadResults(s.id);setSel(sel===s.id?null:s.id);}}>{sel===s.id?"ซ่อน":"ดูผล"}</Btn>
+                <Btn v="success" sm onClick={()=>exportExcel(s,room,bank,res)}>⬇ Excel</Btn>
+              </div>
+            </div>
+            {sel===s.id&&(
+              <div style={{borderTop:`1px solid ${C.border}`,paddingTop:12}}>
+                {(room?.students||[]).map(st=>{const r=res.find(r=>+r.studentNo===+st.no);const sc=r?.finalScore??r?.autoScore;const pct=sc!==undefined?Math.round(sc/total*100):null;return(
+                  <div key={st.no} style={{display:"flex",gap:10,alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.border}`,fontSize:13}}>
+                    <span className="mono" style={{color:C.textMute,minWidth:22}}>{st.no}</span><span style={{flex:1}}>{st.name}</span>
+                    {r?<><Badge c={pct>=60?"green":"red"}>{sc}/{total}</Badge>{r.violations?.length>0&&<Badge c="red">⚠{r.violations.length}</Badge>}{hasWritten&&<Btn v={r.gradingDone?"muted":"warn"} sm onClick={()=>setGradingModal({result:r,bank,studentName:st.name,sessionId:s.id})}>{r.gradingDone?"✓ ดูผล":"✏ ตรวจ"}</Btn>}</>:<Badge c="muted">ยังไม่ส่ง</Badge>}
+                  </div>
+                );})}
+              </div>
+            )}
+          </Card>
+        );
+      })}
+      {gradingModal&&(
+        <Modal title={`✏ ตรวจข้อเขียน – ${gradingModal.studentName}`} onClose={()=>setGradingModal(null)} wide>
+          {gradingModal.bank.questions.filter(q=>q.type==="written").map((q,qi)=>{
+            const ans=gradingModal.result.answers?.[q.id]||"";const curPts=gradingModal.result.manualGrades?.[q.id];
+            return(
+              <div key={q.id} style={{background:C.bgPanel,borderRadius:12,padding:16,marginBottom:12}}>
+                <div style={{fontWeight:600,fontSize:14,marginBottom:8}}>ข้อ {qi+1}. {q.text}</div>
+                <div style={{background:C.bgCard,borderRadius:8,padding:12,fontSize:13,color:C.textSub,minHeight:60,lineHeight:1.75,marginBottom:12,whiteSpace:"pre-wrap"}}>{ans||<span style={{fontStyle:"italic"}}>(ไม่มีคำตอบ)</span>}</div>
+                <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                  <span style={{fontSize:13,color:C.textSub}}>คะแนน (เต็ม {q.points}):</span>
+                  {Array.from({length:q.points+1},(_,i)=>i).map(pt=>(
+                    <button key={pt} onClick={async()=>{
+                      const mg={...gradingModal.result.manualGrades,[q.id]:pt};
+                      const mcPts=gradingModal.bank.questions.filter(qq=>qq.type==="mc").reduce((a,qq)=>a+(gradingModal.result.answers?.[qq.id]===qq.answer?qq.points:0),0);
+                      const wPts=gradingModal.bank.questions.filter(qq=>qq.type==="written").reduce((a,qq)=>a+(mg[qq.id]||0),0);
+                      const allDone=gradingModal.bank.questions.filter(qq=>qq.type==="written").every(qq=>mg[qq.id]!==undefined);
+                      await grade(gradingModal.result.id,gradingModal.sessionId,mg,mcPts+wPts,allDone);
+                    }} style={{width:34,height:34,borderRadius:8,border:`1.5px solid ${curPts===pt?C.primary:C.border}`,cursor:"pointer",fontWeight:700,fontSize:13,fontFamily:"'Sarabun',sans-serif",background:curPts===pt?C.primary:C.bgCard,color:curPts===pt?"#fff":C.textSub}}>
+                      {pt}
+                    </button>
+                  ))}
+                  {curPts!==undefined&&<span style={{fontSize:13,color:C.accent,fontWeight:600}}>→ {curPts} คะแนน</span>}
+                </div>
+              </div>
+            );
+          })}
+          <Btn v="primary" style={{width:"100%",justifyContent:"center"}} onClick={()=>setGradingModal(null)}>ปิด</Btn>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════════════════════
+   STUDENT FLOW
+════════════════════════════════ */
+function StudentFlow({user,onFinish}){
+  const [phase,setPhase]=useState("waiting");
+  const [session,setSession]=useState(user.session);
+  const [bank,setBank]=useState(null);
+  const [questions,setQuestions]=useState([]);
+  const [answers,setAnswers]=useState({});
+  const [current,setCurrent]=useState(0);
+  const [violations,setViolations]=useState([]);
+  const [warning,setWarning]=useState(null);
+  const [result,setResult]=useState(null);
+  const submitted=useRef(false);
+
+  useEffect(()=>{apiGet({action:"getBanks"}).then(d=>setBank((d.banks||[]).find(b=>b.id===session.bankId)));},[]);
+  useEffect(()=>{
+    if(phase==="done")return;
+    const t=setInterval(async()=>{
+      try{
+        const d=await apiGet({action:"getSessions"});
+        const s=(d.sessions||[]).find(s=>s.id===session.id);
+        if(!s)return;setSession(s);
+        if(s.status==="active"&&phase==="waiting"&&bank){
+          const qs=shuffle(bank.questions).map(q=>({...q,shuffledChoices:q.type==="mc"?shuffle(q.choices.map((c,i)=>({text:c,origIdx:i}))):undefined}));
+          setQuestions(qs);setPhase("exam");
+        }
+        if(s.status==="closed"&&phase==="exam"&&!submitted.current)doSubmit(true);
+      }catch{}
+    },2000);
+    return()=>clearInterval(t);
+  },[phase,bank]);
+
+  const onViolation=useCallback(msg=>{setViolations(v=>[...v,msg]);setWarning(msg);setTimeout(()=>setWarning(null),3500);},[]);
+  useAntiCheat(phase==="exam",onViolation);
+
+  const doSubmit=useCallback(async(auto=false)=>{
+    if(submitted.current)return;submitted.current=true;
+    let sc=0;const fa={};
+    questions.forEach(q=>{
+      const ans=answers[q.id];fa[q.id]=q.type==="written"?(ans||""):ans;
+      if(q.type==="mc"&&ans!==undefined&&q.shuffledChoices[ans].origIdx===q.answer)sc+=q.points;
+    });
+    try{await apiPost({action:"submitResult",sessionId:session.id,studentNo:user.studentNo,studentName:user.studentName,answers:fa,autoScore:sc,violations,gradingDone:!questions.some(q=>q.type==="written"),manualGrades:{}});}catch(e){console.error(e);}
+    setResult({autoScore:sc,violations:[...violations]});setPhase("done");
+  },[answers,violations,questions]);
+
+  const handleEnd=useCallback(()=>doSubmit(true),[doSubmit]);
+  const totalSec=+session.remainingAtPause||session.timeLimit*60;
+  const remaining=useCountdown(totalSec,phase==="exam"&&session.status==="active",handleEnd);
+  const pct=Math.round((remaining/totalSec)*100);
+  const tc=remaining<60?C.danger:remaining<300?C.warn:C.accent;
+  const totalPts=bank?.questions?.reduce((a,q)=>a+q.points,0)||0;
+
+  if(phase==="waiting")return(
+    <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <style>{GS}</style>
+      <div style={{textAlign:"center",maxWidth:380}}>
+        <div style={{fontSize:52,marginBottom:12,animation:"pulse 2s infinite"}}>⏳</div>
+        <h2 style={{fontSize:22,fontWeight:700,marginBottom:8}}>รอครูเริ่มสอบ...</h2>
+        <p style={{color:C.textSub,marginBottom:24,fontSize:14}}>ระบบจะพาคุณเข้าสู่ข้อสอบเมื่อครูกดเริ่ม</p>
+        <Card style={{textAlign:"left",marginBottom:14}}>
+          {[["การสอบ",session.title],["ชื่อ",user.studentName],["เวลา",`${session.timeLimit} นาที`]].map(([k,v])=>(
+            <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:`1px solid ${C.border}`,fontSize:13}}><span style={{color:C.textSub}}>{k}</span><span style={{fontWeight:600}}>{v}</span></div>
+          ))}
+        </Card>
+        <div style={{background:C.dangerLight,border:`1.5px solid ${C.danger}`,borderRadius:10,padding:12,fontSize:12,color:C.danger,textAlign:"left"}}>⚠️ ระบบตรวจจับ: ออกจากหน้า · Copy · จับภาพหน้าจอ</div>
+      </div>
+    </div>
+  );
+
+  if(phase==="done"&&result)return(
+    <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <style>{GS}</style>
+      <Card style={{maxWidth:500,width:"100%",textAlign:"center",boxShadow:"0 8px 40px rgba(0,0,0,.1)"}}>
+        <div style={{fontSize:52,marginBottom:10}}>{result.autoScore/totalPts>=0.6?"🎉":"😔"}</div>
+        <h2 style={{marginBottom:4}}>ส่งข้อสอบแล้ว!</h2>
+        <p style={{color:C.textSub,marginBottom:20,fontSize:13}}>{user.studentName}</p>
+        <div className="mono" style={{fontSize:52,fontWeight:700,color:result.autoScore/totalPts>=0.6?C.accent:C.danger}}>{result.autoScore}/{totalPts}</div>
+        <div style={{fontSize:13,color:C.textSub,marginBottom:16}}>{Math.round(result.autoScore/totalPts*100)}%</div>
+        {bank?.questions?.some(q=>q.type==="written")&&<div style={{background:C.warnLight,border:`1px solid ${C.warn}`,borderRadius:10,padding:10,fontSize:12,color:C.warn,marginBottom:14}}>⚠ ข้อเขียนรอครูตรวจ คะแนนอาจเพิ่ม</div>}
+        {result.violations.length>0&&<div style={{background:C.dangerLight,borderRadius:10,padding:12,marginBottom:14,textAlign:"left"}}><div style={{fontWeight:700,fontSize:12,color:C.danger,marginBottom:5}}>บันทึกการละเมิด</div>{result.violations.map((v,i)=><div key={i} style={{fontSize:11,color:C.danger}}>• {v}</div>)}</div>}
+        {questions.filter(q=>q.type==="mc").length>0&&(
+          <div style={{textAlign:"left",marginTop:14}}>
+            <div style={{fontWeight:600,fontSize:13,marginBottom:8}}>เฉลยข้อปรนัย</div>
+            {questions.filter(q=>q.type==="mc").map(q=>{const ch=answers[q.id];const ok=ch!==undefined&&q.shuffledChoices[ch].origIdx===q.answer;return(<div key={q.id} style={{padding:"9px 12px",background:ch===undefined?C.bgPanel:ok?C.accentLight:C.dangerLight,borderRadius:8,marginBottom:5,fontSize:12}}><strong>{q.text}</strong><br/>{ch!==undefined?<span style={{color:ok?C.accent:C.danger}}>ตอบ: {q.shuffledChoices[ch].text} {ok?"✓":"✗"} · เฉลย: {q.shuffledChoices.find(c=>c.origIdx===q.answer)?.text}</span>:<span style={{color:C.textMute}}>ไม่ได้ตอบ</span>}</div>);})}
+          </div>
+        )}
+        <Btn v="muted" style={{width:"100%",justifyContent:"center",marginTop:16}} onClick={onFinish}>กลับหน้าหลัก</Btn>
+      </Card>
+    </div>
+  );
+
+  const q=questions[current];if(!q)return null;
+  const isPaused=session.status==="paused";
+  return(
+    <div style={{minHeight:"100vh",background:C.bg,userSelect:"none"}} onCopy={e=>e.preventDefault()} onCut={e=>e.preventDefault()}>
+      <style>{GS}</style>
+      {warning&&<div style={{position:"fixed",top:14,left:"50%",transform:"translateX(-50%)",background:C.danger,color:"#fff",padding:"10px 20px",borderRadius:10,zIndex:999,fontWeight:700,fontSize:13,whiteSpace:"nowrap"}}>⚠️ {warning} — บันทึกแล้ว</div>}
+      {isPaused&&<div style={{position:"fixed",inset:0,background:"rgba(255,255,255,.96)",backdropFilter:"blur(8px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200,flexDirection:"column",gap:10}}><div style={{fontSize:52}}>⏸</div><div style={{fontSize:20,fontWeight:700}}>การสอบหยุดชั่วคราว</div><div style={{color:C.textSub,fontSize:13}}>รอครูกด "สอบต่อ"</div></div>}
+      <div style={{background:C.bgCard,borderBottom:`1.5px solid ${C.border}`,padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:10}}>
+        <div style={{fontSize:12,color:C.textSub}}>ตอบแล้ว {Object.keys(answers).length}/{questions.length}</div>
+        <div className="mono" style={{fontWeight:700,fontSize:22,color:tc}}>{fmtTime(remaining)}</div>
+        <Btn v="danger" sm onClick={()=>{if(confirm("ส่งข้อสอบ?"))doSubmit(false);}}>ส่งข้อสอบ</Btn>
+      </div>
+      <div style={{height:4,background:C.bgPanel}}><div style={{height:"100%",width:`${pct}%`,background:tc,transition:"width 1s linear"}}/></div>
+      <div style={{maxWidth:640,margin:"0 auto",padding:"18px 16px"}}>
+        <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:18}}>
+          {questions.map((qq,i)=><button key={qq.id} onClick={()=>setCurrent(i)} style={{width:32,height:32,borderRadius:7,border:"none",cursor:"pointer",fontWeight:700,fontSize:11,fontFamily:"'Sarabun',sans-serif",background:answers[qq.id]!==undefined?C.primary:C.bgPanel,color:answers[qq.id]!==undefined?"#fff":C.textSub,outline:i===current?`2px solid ${C.primary}`:"none",outlineOffset:2}}>{i+1}</button>)}
+        </div>
+        <Card style={{marginBottom:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}>
+            <span style={{fontSize:12,color:C.textSub}}>ข้อ {current+1} / {questions.length}</span>
+            <div style={{display:"flex",gap:6}}><Badge c={q.type==="mc"?"blue":"warn"}>{q.type==="mc"?"ปรนัย":"อัตนัย"}</Badge><Badge c="muted">{q.points} คะแนน</Badge></div>
+          </div>
+          <p style={{fontSize:16,fontWeight:600,lineHeight:1.75,marginBottom:18}}>{q.text}</p>
+          {q.type==="mc"?(
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {q.shuffledChoices.map((c,i)=><button key={i} onClick={()=>setAnswers({...answers,[q.id]:i})} style={{padding:"12px 16px",borderRadius:10,cursor:"pointer",textAlign:"left",fontFamily:"'Sarabun',sans-serif",fontSize:14,fontWeight:answers[q.id]===i?600:400,border:`1.5px solid ${answers[q.id]===i?C.primary:C.border}`,background:answers[q.id]===i?C.primaryLight:C.bgCard,color:answers[q.id]===i?C.primary:C.text,transition:"all .1s"}}><span style={{fontWeight:700,color:C.textMute,marginRight:10}}>{["A","B","C","D"][i]}.</span>{c.text}</button>)}
+            </div>
+          ):<textarea style={{minHeight:120,resize:"vertical",fontSize:14,lineHeight:1.75}} placeholder="พิมพ์คำตอบที่นี่..." value={answers[q.id]||""} onChange={e=>setAnswers({...answers,[q.id]:e.target.value})}/>}
+        </Card>
+        <div style={{display:"flex",gap:8}}>
+          {current>0&&<Btn v="muted" style={{flex:1,justifyContent:"center"}} onClick={()=>setCurrent(c=>c-1)}>← ก่อนหน้า</Btn>}
+          {current<questions.length-1?<Btn v="primary" style={{flex:1,justifyContent:"center"}} onClick={()=>setCurrent(c=>c+1)}>ถัดไป →</Btn>:<Btn v="success" style={{flex:1,justifyContent:"center"}} onClick={()=>{if(confirm("ส่งข้อสอบ?"))doSubmit(false);}}>✓ ส่งข้อสอบ</Btn>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════
+   ROOT
+════════════════════════════════ */
+function App(){
+  const [user,setUser]=useState(null);
+  return(
+    <>
+      {!user&&<LoginPage onLogin={setUser}/>}
+      {user?.role==="teacher"&&<TeacherApp user={user} onLogout={()=>setUser(null)}/>}
+      {user?.role==="student"&&<StudentFlow user={user} onFinish={()=>setUser(null)}/>}
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+  </script>
+</body>
+</html>
